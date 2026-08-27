@@ -30,6 +30,7 @@ const elements = {
   guideCanvas: document.querySelector('#guide-canvas'),
   detectorCanvas: document.querySelector('#detector-canvas'),
   startButton: document.querySelector('#start-button'),
+  startPrintButton: document.querySelector('#start-print-button'),
   printButton: document.querySelector('#print-button'),
   switchButton: document.querySelector('#camera-switch'),
   markerId: document.querySelector('#marker-id'),
@@ -356,13 +357,15 @@ async function switchCamera() {
 
 elements.startButton.addEventListener('click', startCamera);
 elements.switchButton.addEventListener('click', switchCamera);
-elements.printButton.addEventListener('click', () => {
+const printSampleMarker = () => {
   try {
     openPrintableMarker();
   } catch (error) {
     setHud(error.message);
   }
-});
+};
+elements.startPrintButton.addEventListener('click', printSampleMarker);
+elements.printButton.addEventListener('click', printSampleMarker);
 
 elements.markerId.addEventListener('change', () => {
   const parsed = Number(elements.markerId.value);
