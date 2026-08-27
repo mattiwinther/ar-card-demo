@@ -6,6 +6,7 @@ import {
   Box,
   createIcons,
   Focus,
+  Hand,
   Info,
   Printer,
   ScanLine,
@@ -15,11 +16,12 @@ import {
   X,
 } from 'lucide';
 import { estimateSquarePose, markerArea } from './pose.js';
+import { HandGestureController } from './gestures.js';
 import { createBeacon, createBot, loadUploadedModel } from './models.js';
 import { openPrintableMarker, renderMiniMarker, SAMPLE_MARKER_ID } from './marker.js';
 
 createIcons({
-  icons: { ArrowUpRight, Box, Focus, Info, Printer, ScanLine, ShieldCheck, SwitchCamera, Upload, X },
+  icons: { ArrowUpRight, Box, Focus, Hand, Info, Printer, ScanLine, ShieldCheck, SwitchCamera, Upload, X },
 });
 renderMiniMarker(document.querySelector('#marker-mini'));
 
@@ -29,6 +31,8 @@ const elements = {
   threeCanvas: document.querySelector('#three-canvas'),
   guideCanvas: document.querySelector('#guide-canvas'),
   detectorCanvas: document.querySelector('#detector-canvas'),
+  handCanvas: document.querySelector('#hand-canvas'),
+  gestureState: document.querySelector('#gesture-state'),
   startButton: document.querySelector('#start-button'),
   startPrintButton: document.querySelector('#start-print-button'),
   printButton: document.querySelector('#print-button'),
@@ -74,6 +78,8 @@ anchor.visible = false;
 scene.add(anchor);
 
 const modelMount = new THREE.Group();
+// YXZ keeps the model upright while its local Y rotates around the marker normal.
+modelMount.rotation.order = 'YXZ';
 modelMount.rotation.x = -Math.PI / 2;
 anchor.add(modelMount);
 
@@ -81,6 +87,8 @@ let activeModel = createBot();
 modelMount.add(activeModel);
 
 let detector = null;
+let handGestures = null;
+let handInitialization = null;
 let cameraStream = null;
 let facingMode = 'environment';
 let cameraStarted = false;
@@ -93,6 +101,8 @@ let lastMarkerAt = 0;
 let hasPose = false;
 let tracking = false;
 let frameHandle = 0;
+let gestureRotation = 0;
+let gestureScale = 1;
 const detectionTimes = [];
 const detectionStamps = [];
 const clock = new THREE.Clock();
@@ -162,6 +172,8 @@ function resizeStage() {
   elements.detectorCanvas.height = processingHeight;
   elements.guideCanvas.width = processingWidth;
   elements.guideCanvas.height = processingHeight;
+  elements.handCanvas.width = processingWidth;
+  elements.handCanvas.height = processingHeight;
 
   const verticalFov = THREE.MathUtils.degToRad(camera.fov);
   const focal = (processingHeight * 0.5) / Math.tan(verticalFov * 0.5);
@@ -256,7 +268,7 @@ function updatePose(marker) {
   }
 
   const markerScale = markerSizeMeters() * 0.92;
-  modelMount.scale.setScalar(markerScale);
+  modelMount.scale.setScalar(markerScale * gestureScale);
   anchor.visible = true;
   lastMarkerAt = performance.now();
   return true;
@@ -297,9 +309,19 @@ function runDetection(now) {
   }
 }
 
+function applyHandTransform({ rotationDelta, scaleFactor }) {
+  gestureRotation += rotationDelta;
+  gestureScale = THREE.MathUtils.clamp(gestureScale * scaleFactor, 0.55, 2.4);
+  modelMount.rotation.y = gestureRotation;
+  modelMount.scale.setScalar(markerSizeMeters() * 0.92 * gestureScale);
+}
+
 function animate(now) {
   frameHandle = requestAnimationFrame(animate);
   runDetection(now);
+  // The hand task consumes the same 640px working frame at 7–12fps, leaving
+  // the marker detector its 30fps budget on mobile hardware.
+  handGestures?.process(elements.detectorCanvas, now, tracking && anchor.visible);
   activeModel?.userData?.animate?.(clock.getElapsedTime());
   renderer.render(scene, camera);
 }
@@ -310,6 +332,27 @@ async function initializeDetector() {
   await initAruco();
   detector = new ARucoDetector('ARUCO');
   setStatus('System ready');
+}
+
+async function initializeHandTracking() {
+  if (handInitialization) return handInitialization;
+
+  handInitialization = (async () => {
+    const controller = new HandGestureController({
+      canvas: elements.handCanvas,
+      onTransform: applyHandTransform,
+      onStateChange: (message) => { elements.gestureState.querySelector('span').textContent = message; },
+    });
+    try {
+      await controller.initialize();
+      handGestures = controller;
+    } catch (error) {
+      controller.close();
+      elements.gestureState.querySelector('span').textContent = 'Hand controls unavailable on this device';
+      console.warn('Hand controls could not be initialized:', error);
+    }
+  })();
+  return handInitialization;
 }
 
 async function startCamera() {
@@ -338,6 +381,8 @@ async function startCamera() {
     setStatus('Tracker active');
     setHud(`Looking for marker #${elements.markerId.value}`);
     resizeStage();
+    // Do not block camera startup on the 7.5 MB hand model.
+    void initializeHandTracking();
   } catch (error) {
     console.error('Camera initialization failed:', error);
     const denied = error?.name === 'NotAllowedError';
@@ -413,6 +458,7 @@ elements.aboutDialog.addEventListener('click', (event) => {
 window.addEventListener('resize', resizeStage);
 window.addEventListener('beforeunload', () => {
   cancelAnimationFrame(frameHandle);
+  handGestures?.close();
   cameraStream?.getTracks().forEach((track) => track.stop());
 });
 

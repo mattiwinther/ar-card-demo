@@ -125,7 +125,7 @@ button { color: inherit; }
   background-size: 80px 80px, 80px 80px, auto;
 }
 
-#camera, #three-canvas, #guide-canvas {
+#camera, #three-canvas, #guide-canvas, #hand-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -135,6 +135,7 @@ button { color: inherit; }
 .camera-active #camera { opacity: .72; }
 #three-canvas { z-index: 2; pointer-events: none; }
 #guide-canvas { z-index: 3; pointer-events: none; }
+#hand-canvas { z-index: 4; pointer-events: none; }
 .camera-active::after {
   content: '';
   position: absolute;
@@ -264,6 +265,8 @@ button { color: inherit; }
 .text-button { grid-column: 2; justify-self: start; padding: 0; border: 0; background: none; display: flex; align-items: center; gap: 7px; color: var(--paper); font-size: 11px; font-weight: 600; cursor: pointer; }
 .text-button:hover { color: var(--lime); }
 .text-button svg { width: 14px; }
+.gesture-state { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; margin: 2px 0 0; color: #a5b2ac; font: 9px/1.5 var(--font-mono); }
+.gesture-state svg { width: 14px; color: var(--lime); flex: 0 0 auto; }
 
 .telemetry-card { right: 24px; top: 24px; width: 292px; padding: 20px; }
 .telemetry-header { display: flex; justify-content: space-between; align-items: flex-start; }
@@ -331,7 +334,8 @@ select { height: 32px; padding: 0 30px 0 9px; border: 1px solid rgba(255,255,255
   .start-screen h1 { font-size: clamp(43px, 14vw, 64px); }
   .start-copy { font-size: 12px; }
   .instruction-card { left: 12px; right: 12px; top: 12px; width: auto; padding: 13px; grid-template-columns: 30px 1fr; }
-  .instruction-card p:not(.panel-kicker), .instruction-card .text-button { display: none; }
+  .instruction-card p:not(.panel-kicker):not(.gesture-state), .instruction-card .text-button { display: none; }
+  .gesture-state { margin-top: 4px; font-size: 8px; }
   .instruction-card h2 { margin-bottom: 0; }
   .step-badge { width: 29px; height: 29px; }
   .telemetry-card { left: 12px; right: 12px; top: auto; bottom: 72px; width: auto; padding: 13px; }
