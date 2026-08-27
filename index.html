@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07111f" />
+    <title>Card AR</title>
+    <link rel="stylesheet" href="/src/style.css" />
+
+    <!-- Kept as external scripts so this remains a small static-site demo. -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+  </head>
+  <body>
+    <main id="app">
+      <section id="welcome" class="panel">
+        <p class="eyebrow">IMAGE-TRACKED WEB AR</p>
+        <h1>Bring this card to life.</h1>
+        <p id="profile-copy">Point your camera at the included demo card after starting the experience.</p>
+        <button id="start-ar" type="button" disabled>Loading AR…</button>
+        <p class="hint">Camera access is required. Use HTTPS when not developing on localhost.</p>
+      </section>
+
+      <div id="ar-status" class="status" aria-live="polite" hidden>
+        <span class="status-dot"></span>
+        <span id="status-text">Looking for the card…</span>
+      </div>
+
+      <a-scene
+        id="ar-scene"
+        embedded
+        vr-mode-ui="enabled: false"
+        device-orientation-permission-ui="enabled: false"
+        mindar-image="imageTargetSrc: /targets.mind; autoStart: false; uiLoading: no; uiScanning: no; maxTrack: 1; filterMinCF: 0.0001; filterBeta: 0.001"
+        color-space="sRGB"
+        renderer="antialias: true; colorManagement: true; physicallyCorrectLights: true"
+      >
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+        <!-- All children of this entity use the business card as their coordinate system. -->
+        <a-entity id="card-anchor" mindar-image-target="targetIndex: 0"></a-entity>
+      </a-scene>
+
+      <button id="close-ar" type="button" aria-label="Close AR camera" hidden>×</button>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
