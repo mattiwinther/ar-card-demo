@@ -363,9 +363,14 @@ function runDetection(now) {
 
     if (modelTransferred && now - lastMarkerAt > MARKER_HOLD_MS) markerRelocalizing = true;
 
-    if (target && updatePose(target, now, markerRelocalizing)) {
+    const poseUpdated = target && updatePose(target, now, markerRelocalizing);
+    // A new marker needs two consistent frames before the stabilizer locks.
+    // Do not clear that first pending sample merely because the camera has
+    // already been running longer than the marker-loss timeout.
+    const acquiringPose = Boolean(target && !hasPose && poseStabilizer.reference);
+    if (poseUpdated) {
       setTracking(true);
-    } else if (!modelTransferred && now - lastMarkerAt > MARKER_HOLD_MS) {
+    } else if (!modelTransferred && !acquiringPose && now - lastMarkerAt > MARKER_HOLD_MS) {
       anchor.visible = false;
       hasPose = false;
       markerRelocalizing = false;
