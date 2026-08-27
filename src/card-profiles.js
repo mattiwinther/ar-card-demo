@@ -4,7 +4,7 @@ const profiles = {
     title: 'Image-tracking demo',
     accent: '#66e3ff',
     message: 'The hologram is anchored to the printed card.',
-    // To use a real model, set modelUrl to a local GLB, e.g. '/models/robot.glb'.
+    // To use a real model, set modelUrl to a local GLB, e.g. './models/robot.glb'.
     modelUrl: null,
   },
   john: {

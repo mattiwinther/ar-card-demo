@@ -43,7 +43,7 @@ Deploy the contents of `dist/` to any HTTPS static host.
 Place a GLB at `public/models/robot.glb`, then edit the relevant profile in `src/card-profiles.js`:
 
 ```js
-modelUrl: '/models/robot.glb',
+modelUrl: './models/robot.glb',
 ```
 
 The model is a child of `#card-anchor`, so it inherits the card's pose. Adjust `position`, `rotation`, and `scale` in `addModel()` in `src/main.js` to suit the GLB's coordinate system and size.
