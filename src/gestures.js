@@ -1,5 +1,5 @@
-const MAX_HAND_FPS = 10;
-const MIN_HAND_FPS = 5;
+const MAX_HAND_FPS = 12;
+const MIN_HAND_FPS = 7;
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -27,9 +27,9 @@ function handCenter(landmarks) {
 }
 
 /**
- * GPU hand landmarks share the marker detector's downscaled frame. Two hands
- * are supported so the left hand can manipulate the model while the right
- * thumb operates the on-screen size controls.
+ * GPU hand landmarks share the marker detector's downscaled frame. One hand
+ * is sufficient for palm position and full 3D orientation, keeping mobile
+ * inference costs low.
  */
 export class HandGestureController {
   constructor({ canvas, onHands, onStateChange }) {
@@ -55,7 +55,7 @@ export class HandGestureController {
         delegate: 'GPU',
       },
       runningMode: 'VIDEO',
-      numHands: 2,
+      numHands: 1,
       minHandDetectionConfidence: 0.62,
       minHandPresenceConfidence: 0.58,
       minTrackingConfidence: 0.55,
@@ -78,7 +78,7 @@ export class HandGestureController {
       this.missingFrames += 1;
       if (this.missingFrames >= 2) {
         this.clear();
-        this.onHands?.({ activeHand: null, rightHand: null, rotationEnabled: false, canManipulate });
+        this.onHands?.({ activeHand: null, rotationEnabled: false, canManipulate });
         this.setState('Show your left hand to lift the model');
       }
       return;
@@ -91,25 +91,20 @@ export class HandGestureController {
       worldLandmarks: result.worldLandmarks?.[index],
       label: handedness[index]?.[0]?.categoryName || 'Unknown',
       center: handCenter(landmarks),
-      spread: distance(landmarks[4], landmarks[20]),
-      thumb: landmarks[4],
       open: isOpenHand(landmarks),
     }));
     this.draw(hands);
 
-    const leftHand = hands.find((hand) => hand.label === 'Left');
-    const rightHand = hands.find((hand) => hand.label === 'Right');
-    // A single unclassified hand remains useful on browsers that omit labels.
-    const activeHand = leftHand || hands[0];
+    const activeHand = hands[0];
     const rotationEnabled = canManipulate && activeHand.open && Boolean(activeHand.worldLandmarks);
 
     if (rotationEnabled) {
-      this.setState(rightHand ? 'Left hand: move / rotate · right thumb: size controls' : 'Hand attached · rotate your palm in any direction');
+      this.setState('Hand attached · rotate your palm in any direction');
     } else {
       this.setState(canManipulate ? 'Open all five fingers to rotate the model' : 'Find the marker, then show your left hand');
     }
 
-    this.onHands?.({ activeHand, rightHand, rotationEnabled, canManipulate });
+    this.onHands?.({ activeHand, rotationEnabled, canManipulate });
   }
 
   draw(hands) {

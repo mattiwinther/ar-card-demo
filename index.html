@@ -73,7 +73,7 @@
             <p>Keep the full black square in frame. For best results, use even light and avoid glare.</p>
           </div>
           <button class="text-button" id="print-button"><i data-lucide="printer"></i> Print marker</button>
-          <p class="gesture-state" id="gesture-state"><i data-lucide="hand"></i><span>Left hand lifts model · right thumb adjusts size</span></p>
+          <p class="gesture-state" id="gesture-state"><i data-lucide="hand"></i><span>Open hand lifts and rotates model · use SIZE controls</span></p>
         </aside>
 
         <aside class="telemetry-card glass-panel" id="telemetry-card">
@@ -148,7 +148,7 @@
       <button class="dialog-close icon-button" id="about-close" aria-label="Close"><i data-lucide="x"></i></button>
       <p class="eyebrow">HOW IT WORKS</p>
       <h2>A fast, local AR pipeline.</h2>
-      <p><strong>aruco-rs</strong> detects marker corners in WebAssembly. When a hand appears, MediaPipe transfers the model from the marker to the palm; finger spread sizes it, the left wrist turns it, and the right thumb can use the size controls.</p>
+      <p><strong>aruco-rs</strong> detects marker corners in WebAssembly. When a hand appears, MediaPipe transfers the model from the marker to the palm; thumb, index finger, and wrist define its full 3D rotation, while the on-screen controls set its size.</p>
       <ol>
         <li><span>01</span>Camera frame</li>
         <li><span>02</span>ArUco detection</li>

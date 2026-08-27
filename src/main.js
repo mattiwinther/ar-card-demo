@@ -106,14 +106,12 @@ let lastMarkerAt = 0;
 let hasPose = false;
 let tracking = false;
 let frameHandle = 0;
-let gestureScale = 1;
 let sizeScaler = 1;
 let handAttached = false;
 let modelTransferred = false;
 let rotationReferenceHand = null;
 const rotationReferenceModel = new THREE.Quaternion();
 const modelTargetRotation = modelMount.quaternion.clone();
-let zoomHover = null;
 const handTargetPosition = new THREE.Vector3();
 const handRaycaster = new THREE.Raycaster();
 const handNdc = new THREE.Vector2();
@@ -296,7 +294,7 @@ function updatePose(marker) {
   }
 
   const markerScale = markerSizeMeters() * 0.92;
-  modelMount.scale.setScalar(markerScale * gestureScale);
+  modelMount.scale.setScalar(markerScale * sizeScaler);
   anchor.visible = true;
   lastMarkerAt = performance.now();
   return true;
@@ -347,6 +345,7 @@ function runDetection(now) {
 function setSizeScaler(next) {
   sizeScaler = THREE.MathUtils.clamp(next, 0.5, 2.25);
   elements.zoomLabel.textContent = `SIZE ${sizeScaler.toFixed(1)}×`;
+  modelMount.scale.setScalar(markerSizeMeters() * 0.92 * sizeScaler);
 }
 
 function adjustSizeScaler(direction) {
@@ -356,43 +355,13 @@ function adjustSizeScaler(direction) {
 function resetHandTransfer() {
   modelTransferred = false;
   handAttached = false;
-  gestureScale = 1;
   rotationReferenceHand = null;
   handTargetPosition.set(0, 0, 0);
   modelMount.position.set(0, 0, 0);
   modelMount.rotation.set(-Math.PI / 2, 0, 0);
   modelTargetRotation.copy(modelMount.quaternion);
-  modelMount.scale.setScalar(markerSizeMeters() * 0.92);
+  modelMount.scale.setScalar(markerSizeMeters() * 0.92 * sizeScaler);
   guideContext.clearRect(0, 0, processingWidth, processingHeight);
-}
-
-function buttonContainsPoint(button, point) {
-  if (!point) return false;
-  const stageRect = elements.stage.getBoundingClientRect();
-  const rect = button.getBoundingClientRect();
-  const x = stageRect.left + point.x * stageRect.width;
-  const y = stageRect.top + point.y * stageRect.height;
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-}
-
-function updateThumbZoom(thumb) {
-  const direction = buttonContainsPoint(elements.zoomIn, thumb) ? 1
-    : buttonContainsPoint(elements.zoomOut, thumb) ? -1 : 0;
-  elements.zoomIn.classList.toggle('is-hovered', direction === 1);
-  elements.zoomOut.classList.toggle('is-hovered', direction === -1);
-
-  if (!direction) {
-    zoomHover = null;
-    return;
-  }
-
-  const now = performance.now();
-  if (!zoomHover || zoomHover.direction !== direction) {
-    zoomHover = { direction, since: now };
-  } else if (now - zoomHover.since > 360) {
-    adjustSizeScaler(direction);
-    zoomHover.since = now;
-  }
 }
 
 function placeModelAtHand(center) {
@@ -417,22 +386,26 @@ function placeModelAtHand(center) {
   // Landmark centres fluctuate slightly from inference to inference. Filter
   // them before render interpolation, rather than jumping the render target.
   if (!modelTransferred) handTargetPosition.copy(rawHandTargetPosition);
-  else handTargetPosition.lerp(rawHandTargetPosition, 0.16);
+  else handTargetPosition.lerp(rawHandTargetPosition, 0.32);
   return true;
 }
 
 function palmOrientation(worldLandmarks) {
-  if (!worldLandmarks?.[17]) return null;
-  // Convert MediaPipe's camera axes (Y-down, Z-forward) to Three.js axes.
+  if (!worldLandmarks?.[8]) return null;
+  const wrist = worldLandmarks[0];
+  const thumb = worldLandmarks[4];
+  const index = worldLandmarks[8];
+  // The thumb–index axis and its wrist-facing axis define a stable, full 3D
+  // palm frame. Convert MediaPipe's camera axes to Three.js coordinates.
   handAxisX.set(
-    worldLandmarks[17].x - worldLandmarks[5].x,
-    worldLandmarks[5].y - worldLandmarks[17].y,
-    worldLandmarks[5].z - worldLandmarks[17].z,
+    index.x - thumb.x,
+    thumb.y - index.y,
+    thumb.z - index.z,
   ).normalize();
   handAxisY.set(
-    worldLandmarks[9].x - worldLandmarks[0].x,
-    worldLandmarks[0].y - worldLandmarks[9].y,
-    worldLandmarks[0].z - worldLandmarks[9].z,
+    wrist.x - (thumb.x + index.x) * 0.5,
+    (thumb.y + index.y) * 0.5 - wrist.y,
+    (thumb.z + index.z) * 0.5 - wrist.z,
   );
   handAxisY.addScaledVector(handAxisX, -handAxisY.dot(handAxisX)).normalize();
   handAxisZ.crossVectors(handAxisX, handAxisY).normalize();
@@ -465,21 +438,16 @@ function updateHandRotation(worldLandmarks, enabled) {
     .multiply(rotationReferenceModel);
 }
 
-function updateHandInteraction({ activeHand, rightHand, rotationEnabled, canManipulate }) {
+function updateHandInteraction({ activeHand, rotationEnabled, canManipulate }) {
   if (!canManipulate || !activeHand) {
-    updateThumbZoom(null);
     if (!modelTransferred) {
       handAttached = false;
-      gestureScale = 1;
       handTargetPosition.set(0, 0, 0);
     }
     updateHandRotation(null, false);
     return;
   }
 
-  const nextScale = THREE.MathUtils.clamp(activeHand.spread * 7.5 * sizeScaler, 0.32, 3.2);
-  gestureScale = modelTransferred ? THREE.MathUtils.lerp(gestureScale, nextScale, 0.2) : nextScale;
-  modelMount.scale.setScalar(markerSizeMeters() * 0.92 * gestureScale);
   handAttached = placeModelAtHand(activeHand.center);
   if (handAttached && !modelTransferred) {
     modelTransferred = true;
@@ -487,13 +455,12 @@ function updateHandInteraction({ activeHand, rightHand, rotationEnabled, canMani
     setHud('Hand control active · marker tracking released');
   }
   updateHandRotation(activeHand.worldLandmarks, rotationEnabled);
-  updateThumbZoom(rightHand?.thumb);
 }
 
 function animate(now) {
   frameHandle = requestAnimationFrame(animate);
   runDetection(now);
-  // Two hands are sampled from the shared 640px frame at an adaptive 5–10fps.
+  // One hand is sampled from the shared 640px frame at an adaptive 7–12fps.
   handGestures?.process(elements.detectorCanvas, now, tracking && anchor.visible);
   modelMount.position.lerp(handTargetPosition, handAttached ? 0.22 : 0.16);
   modelMount.quaternion.slerp(modelTargetRotation, 0.14);
