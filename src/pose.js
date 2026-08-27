@@ -101,7 +101,37 @@ export function estimateSquarePose(corners, markerSize, intrinsics) {
   const objectScale = new THREE.Vector3();
   matrix.decompose(position, quaternion, objectScale);
 
-  return { matrix, position, quaternion, translation };
+  // A planar pose becomes numerically unstable as the card approaches an
+  // edge-on view. Expose this so callers can hold the last good pose instead
+  // of applying a noisy estimate.
+  const viewCosine = Math.abs(r3.dot(translation.clone().normalize()));
+  return { matrix, position, quaternion, translation, viewCosine };
+}
+
+export function estimateSquarePoseClosestToReference(corners, markerSize, intrinsics, reference) {
+  if (!reference) return estimateSquarePose(corners, markerSize, intrinsics);
+
+  // Some detector implementations can rotate the first reported corner as
+  // the card crosses an image quadrant. Test every cyclic correspondence and
+  // choose the pose continuous with the last accepted frame.
+  let bestPose = null;
+  let bestScore = Infinity;
+  for (let offset = 0; offset < 4; offset += 1) {
+    const orderedCorners = corners.map((_, index) => corners[(index + offset) % 4]);
+    const candidate = estimateSquarePose(orderedCorners, markerSize, intrinsics);
+    if (!candidate) continue;
+
+    const rotationDistance = 2 * Math.acos(Math.min(1, Math.abs(reference.quaternion.dot(candidate.quaternion))));
+    const positionDistance = reference.position.distanceTo(candidate.position);
+    const relativePositionDistance = positionDistance / Math.max(0.05, reference.position.length());
+    const score = rotationDistance + relativePositionDistance * 0.35;
+    if (score < bestScore) {
+      bestScore = score;
+      bestPose = candidate;
+    }
+  }
+
+  return bestPose;
 }
 
 export function markerArea(corners) {

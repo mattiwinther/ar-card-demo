@@ -17,7 +17,8 @@ import {
   Upload,
   X,
 } from 'lucide';
-import { estimateSquarePose, markerArea } from './pose.js';
+import { estimateSquarePoseClosestToReference, markerArea } from './pose.js';
+import { PoseStabilizer } from './pose-filter.js';
 import { HandGestureController } from './gestures.js';
 import { createBeacon, createBot, loadUploadedModel } from './models.js';
 import { openPrintableMarker, renderMiniMarker, SAMPLE_MARKER_ID } from './marker.js';
@@ -132,6 +133,11 @@ const anchorInverseRotation = new THREE.Quaternion();
 const detectionTimes = [];
 const detectionStamps = [];
 const clock = new THREE.Clock();
+const poseStabilizer = new PoseStabilizer();
+const MIN_MARKER_AREA = 700;
+const MIN_MARKER_EDGE = 22;
+const MIN_VIEW_COSINE = 0.24;
+const MARKER_HOLD_MS = 450;
 
 function setStatus(label, type = 'ready') {
   elements.statusLabel.textContent = label;
@@ -277,26 +283,55 @@ function recordDetection(duration) {
   elements.metricFps.textContent = `${Math.round(rate)} fps`;
 }
 
-function updatePose(marker) {
-  const area = markerArea(marker.corners);
-  if (area < 180) return false;
+function isUsableMarkerQuad(corners) {
+  if (!corners || corners.length !== 4 || markerArea(corners) < MIN_MARKER_AREA) return false;
 
-  const pose = estimateSquarePose(marker.corners, markerSizeMeters(), intrinsics);
-  if (!pose || pose.translation.z < 0.02 || pose.translation.z > 20) return false;
-
-  if (!hasPose) {
-    anchor.position.copy(pose.position);
-    anchor.quaternion.copy(pose.quaternion);
-    hasPose = true;
-  } else {
-    anchor.position.lerp(pose.position, 0.42);
-    anchor.quaternion.slerp(pose.quaternion, 0.38);
+  let winding = 0;
+  let shortestEdge = Infinity;
+  let longestEdge = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const a = corners[index];
+    const b = corners[(index + 1) % 4];
+    const c = corners[(index + 2) % 4];
+    const edge = Math.hypot(b.x - a.x, b.y - a.y);
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (!Number.isFinite(edge) || Math.abs(cross) < 0.001) return false;
+    if (winding && Math.sign(cross) !== winding) return false;
+    winding = Math.sign(cross);
+    shortestEdge = Math.min(shortestEdge, edge);
+    longestEdge = Math.max(longestEdge, edge);
   }
 
+  // Tiny, self-intersecting, or extremely skewed quads are the source of
+  // most one-frame pose spikes. A card near edge-on is rejected below using
+  // the solved viewing angle, which is more reliable than edge ratio alone.
+  return shortestEdge >= MIN_MARKER_EDGE && longestEdge / shortestEdge <= 6;
+}
+
+function updatePose(marker, now) {
+  if (!isUsableMarkerQuad(marker.corners)) return false;
+
+  const pose = estimateSquarePoseClosestToReference(
+    marker.corners,
+    markerSizeMeters(),
+    intrinsics,
+    poseStabilizer.reference,
+  );
+  if (!pose || pose.translation.z < 0.02 || pose.translation.z > 20 || pose.viewCosine < MIN_VIEW_COSINE) return false;
+
+  const stablePose = poseStabilizer.update(pose, now);
+  // Hold the prior anchor during a rejected spike. If a genuinely new pose
+  // persists, the normal marker-loss timeout resets the filter and lets it
+  // acquire cleanly rather than ever accepting a discontinuous flip.
+  if (!stablePose || !stablePose.corrected) return false;
+
+  anchor.position.copy(stablePose.position);
+  anchor.quaternion.copy(stablePose.quaternion);
+  hasPose = true;
   const markerScale = markerSizeMeters() * 0.92;
   modelMount.scale.setScalar(markerScale * sizeScaler);
   anchor.visible = true;
-  lastMarkerAt = performance.now();
+  lastMarkerAt = now;
   return true;
 }
 
@@ -326,11 +361,12 @@ function runDetection(now) {
     elements.metricMarker.textContent = shownMarker ? `#${shownMarker.id}` : '—';
     drawMarkerGuide(shownMarker, Boolean(target));
 
-    if (target && updatePose(target)) {
+    if (target && updatePose(target, now)) {
       setTracking(true);
-    } else if (!modelTransferred && performance.now() - lastMarkerAt > 260) {
+    } else if (!modelTransferred && now - lastMarkerAt > MARKER_HOLD_MS) {
       anchor.visible = false;
       hasPose = false;
+      poseStabilizer.reset();
       setTracking(false);
     }
   } catch (error) {
@@ -355,6 +391,8 @@ function adjustSizeScaler(direction) {
 function resetHandTransfer() {
   modelTransferred = false;
   handAttached = false;
+  hasPose = false;
+  poseStabilizer.reset();
   rotationReferenceHand = null;
   handTargetPosition.set(0, 0, 0);
   modelMount.position.set(0, 0, 0);
@@ -504,6 +542,9 @@ async function startCamera() {
 
   try {
     await initializeDetector();
+    hasPose = false;
+    poseStabilizer.reset();
+    anchor.visible = false;
     cameraStream?.getTracks().forEach((track) => track.stop());
     cameraStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -565,6 +606,7 @@ elements.markerId.addEventListener('change', () => {
   resetHandTransfer();
   anchor.visible = false;
   hasPose = false;
+  poseStabilizer.reset();
   setTracking(false, true);
   setHud(`Looking for marker #${value}`);
 });
