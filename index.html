@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#08110f" />
+    <meta name="description" content="A high-performance browser AR demo powered by aruco-rs and Three.js." />
+    <title>Anchor — ArUco WebAR</title>
+    <script type="module" crossorigin src="./assets/index-CnMUSDM2.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-mF6uZap0.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Anchor home">
+          <span class="brand-mark" aria-hidden="true"><span></span></span>
+          <span>ANCHOR</span>
+          <span class="brand-lab">LAB / 01</span>
+        </a>
+        <div class="top-actions">
+          <div class="status-chip" id="system-status" role="status">
+            <span class="status-dot"></span>
+            <span id="system-status-label">System ready</span>
+          </div>
+          <button class="icon-button" id="about-button" aria-label="About this demo"><i data-lucide="info"></i></button>
+        </div>
+      </header>
+
+      <section class="ar-stage" id="ar-stage" aria-label="Augmented reality camera view">
+        <video id="camera" autoplay muted playsinline></video>
+        <canvas id="three-canvas"></canvas>
+        <canvas id="guide-canvas" aria-hidden="true"></canvas>
+        <canvas id="detector-canvas" hidden></canvas>
+
+        <div class="ambient-glow glow-one"></div>
+        <div class="ambient-glow glow-two"></div>
+
+        <div class="corner corner-tl"></div>
+        <div class="corner corner-tr"></div>
+        <div class="corner corner-bl"></div>
+        <div class="corner corner-br"></div>
+
+        <div class="scan-line" id="scan-line"></div>
+
+        <div class="start-screen" id="start-screen">
+          <div class="start-visual" aria-hidden="true">
+            <div class="start-reticle">
+              <span class="reticle-corner rc-one"></span>
+              <span class="reticle-corner rc-two"></span>
+              <span class="reticle-corner rc-three"></span>
+              <span class="reticle-corner rc-four"></span>
+              <div class="marker-mini" id="marker-mini"></div>
+            </div>
+            <span class="orbit orbit-one"></span>
+            <span class="orbit orbit-two"></span>
+          </div>
+          <p class="eyebrow">WEBASSEMBLY TRACKING</p>
+          <h1>Bring print<br /><em>to life.</em></h1>
+          <p class="start-copy">Point your camera at our fiducial marker and anchor a 3D object precisely to the page.</p>
+          <button class="primary-button" id="start-button">
+            <i data-lucide="scan-line"></i>
+            <span>Start camera</span>
+            <i data-lucide="arrow-up-right"></i>
+          </button>
+          <p class="permission-note"><i data-lucide="shield-check"></i> Camera frames stay on this device</p>
+        </div>
+
+        <aside class="instruction-card glass-panel" id="instruction-card">
+          <div class="step-badge">01</div>
+          <div>
+            <p class="panel-kicker">QUICK START</p>
+            <h2>Find marker <span>#23</span></h2>
+            <p>Keep the full black square in frame. For best results, use even light and avoid glare.</p>
+          </div>
+          <button class="text-button" id="print-button"><i data-lucide="printer"></i> Print marker</button>
+        </aside>
+
+        <aside class="telemetry-card glass-panel" id="telemetry-card">
+          <div class="telemetry-header">
+            <div>
+              <p class="panel-kicker">LIVE TRACKING</p>
+              <h2 id="tracking-title">Waiting for camera</h2>
+            </div>
+            <span class="live-indicator"><span></span> LIVE</span>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric">
+              <span>MARKER</span>
+              <strong id="metric-marker">—</strong>
+            </div>
+            <div class="metric">
+              <span>DETECT</span>
+              <strong id="metric-detect">— ms</strong>
+            </div>
+            <div class="metric">
+              <span>RATE</span>
+              <strong id="metric-fps">— fps</strong>
+            </div>
+          </div>
+
+          <div class="control-row">
+            <label for="marker-id">Target marker</label>
+            <div class="input-shell"><span>#</span><input id="marker-id" type="number" min="0" max="1022" value="23" inputmode="numeric" /></div>
+          </div>
+          <div class="control-row">
+            <label for="marker-size">Printed size</label>
+            <div class="input-shell size-input"><input id="marker-size" type="number" min="20" max="300" value="50" inputmode="decimal" /><span>mm</span></div>
+          </div>
+          <div class="control-row control-stack">
+            <label for="model-select">3D model</label>
+            <select id="model-select">
+              <option value="bot">Anchor bot</option>
+              <option value="beacon">Signal beacon</option>
+            </select>
+          </div>
+          <label class="upload-button" for="model-upload">
+            <i data-lucide="box"></i>
+            <span><strong>Use your own model</strong><small>Upload a .glb or .gltf file</small></span>
+            <i data-lucide="upload"></i>
+          </label>
+          <input id="model-upload" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden />
+        </aside>
+
+        <div class="bottom-hud" id="bottom-hud">
+          <div class="hud-message"><span class="hud-icon"><i data-lucide="focus"></i></span><span id="hud-text">Ready to initialize tracker</span></div>
+          <button class="hud-action" id="camera-switch" aria-label="Switch camera"><i data-lucide="switch-camera"></i></button>
+        </div>
+      </section>
+
+      <footer class="footer-strip">
+        <span>ARUCO-RS / THREE.JS</span>
+        <span class="footer-line"></span>
+        <span>ZERO-COPY WASM PIPELINE</span>
+        <span class="footer-spacer"></span>
+        <a href="https://github.com/AR-js-org/aruco-rs" target="_blank" rel="noreferrer">VIEW SOURCE <i data-lucide="arrow-up-right"></i></a>
+      </footer>
+    </main>
+
+    <dialog id="about-dialog">
+      <button class="dialog-close icon-button" id="about-close" aria-label="Close"><i data-lucide="x"></i></button>
+      <p class="eyebrow">HOW IT WORKS</p>
+      <h2>A fast, local AR pipeline.</h2>
+      <p><strong>aruco-rs</strong> detects the marker corners in WebAssembly. A planar pose solver turns those corners into a 4×4 transform, and Three.js renders the model at that pose.</p>
+      <ol>
+        <li><span>01</span>Camera frame</li>
+        <li><span>02</span>ArUco detection</li>
+        <li><span>03</span>Pose estimation</li>
+        <li><span>04</span>Three.js transform</li>
+      </ol>
+      <p class="dialog-note">Nothing is uploaded. Detection and rendering happen entirely in your browser.</p>
+    </dialog>
+
+  </body>
+</html>
