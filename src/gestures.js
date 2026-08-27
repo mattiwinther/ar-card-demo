@@ -5,13 +5,6 @@ function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function normalizeAngle(angle) {
-  let normalized = angle;
-  while (normalized > Math.PI) normalized -= Math.PI * 2;
-  while (normalized < -Math.PI) normalized += Math.PI * 2;
-  return normalized;
-}
-
 function isFingerExtended(landmarks, knuckle, joint, tip) {
   const wrist = landmarks[0];
   return distance(landmarks[tip], wrist) > distance(landmarks[joint], wrist) * 1.12
@@ -47,7 +40,6 @@ export class HandGestureController {
     this.landmarker = null;
     this.handConnections = [];
     this.nextInferenceAt = 0;
-    this.rotationSession = null;
     this.missingFrames = 0;
     this.lastState = '';
   }
@@ -85,9 +77,8 @@ export class HandGestureController {
     if (!rawHands.length) {
       this.missingFrames += 1;
       if (this.missingFrames >= 2) {
-        this.rotationSession = null;
         this.clear();
-        this.onHands?.({ activeHand: null, rightHand: null, rotationDelta: 0, canManipulate });
+        this.onHands?.({ activeHand: null, rightHand: null, rotationEnabled: false, canManipulate });
         this.setState('Show your left hand to lift the model');
       }
       return;
@@ -97,6 +88,7 @@ export class HandGestureController {
     const handedness = result.handedness || result.handednesses || [];
     const hands = rawHands.map((landmarks, index) => ({
       landmarks,
+      worldLandmarks: result.worldLandmarks?.[index],
       label: handedness[index]?.[0]?.categoryName || 'Unknown',
       center: handCenter(landmarks),
       spread: distance(landmarks[4], landmarks[20]),
@@ -109,24 +101,15 @@ export class HandGestureController {
     const rightHand = hands.find((hand) => hand.label === 'Right');
     // A single unclassified hand remains useful on browsers that omit labels.
     const activeHand = leftHand || hands[0];
-    let rotationDelta = 0;
+    const rotationEnabled = canManipulate && activeHand.open && Boolean(activeHand.worldLandmarks);
 
-    if (canManipulate && activeHand.open) {
-      const palmAngle = Math.atan2(
-        activeHand.landmarks[17].y - activeHand.landmarks[5].y,
-        activeHand.landmarks[17].x - activeHand.landmarks[5].x,
-      );
-      if (this.rotationSession) {
-        rotationDelta = Math.max(-0.18, Math.min(0.18, normalizeAngle(palmAngle - this.rotationSession)));
-      }
-      this.rotationSession = palmAngle;
-      this.setState(rightHand ? 'Left hand: move / turn · right thumb: size controls' : 'Hand attached · turn your wrist to rotate');
+    if (rotationEnabled) {
+      this.setState(rightHand ? 'Left hand: move / rotate · right thumb: size controls' : 'Hand attached · rotate your palm in any direction');
     } else {
-      this.rotationSession = null;
       this.setState(canManipulate ? 'Open all five fingers to rotate the model' : 'Find the marker, then show your left hand');
     }
 
-    this.onHands?.({ activeHand, rightHand, rotationDelta, canManipulate });
+    this.onHands?.({ activeHand, rightHand, rotationEnabled, canManipulate });
   }
 
   draw(hands) {

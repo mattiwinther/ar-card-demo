@@ -24,7 +24,7 @@ The default object is **Anchor bot**, a procedural Three.js robot assembled from
 
 ## Hand controls
 
-The model begins on the marker. Once the marker is locked, show a hand to lift its visual centre into the middle of the palm; thumb-to-pinky distance controls its size. Use an open left hand and turn your wrist to rotate it. The lower-right `−` / `+` controls adjust a size multiplier and can be held with the detected right thumb, leaving the left hand free to manipulate the model. The hand model is bundled in `public/models/` and all landmark processing stays in the browser.
+The model begins on the marker. Once the marker is locked, show a hand to lift its visual centre into the middle of the palm; the marker pose is then frozen and the marker detector is no longer used. Thumb-to-pinky distance controls its size. Use an open left hand and turn your wrist to rotate it. The lower-right `−` / `+` controls adjust a size multiplier and can be held with the detected right thumb, leaving the left hand free to manipulate the model. The hand model is bundled in `public/models/` and all landmark processing stays in the browser.
 
 For mobile performance, the hand task uses MediaPipe's GPU delegate, consumes the same downscaled 640px working frame as the marker detector, and samples up to two hands at an adaptive 5–10fps. The ArUco detector retains its 30fps budget. Uploaded glTF models automatically play their first animation clip when one is available.
 

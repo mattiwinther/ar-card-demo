@@ -106,10 +106,13 @@ let lastMarkerAt = 0;
 let hasPose = false;
 let tracking = false;
 let frameHandle = 0;
-let gestureRotation = 0;
 let gestureScale = 1;
 let sizeScaler = 1;
 let handAttached = false;
+let modelTransferred = false;
+let rotationReferenceHand = null;
+const rotationReferenceModel = new THREE.Quaternion();
+const modelTargetRotation = modelMount.quaternion.clone();
 let zoomHover = null;
 const handTargetPosition = new THREE.Vector3();
 const handRaycaster = new THREE.Raycaster();
@@ -120,6 +123,14 @@ const markerWorldPosition = new THREE.Vector3();
 const markerWorldQuaternion = new THREE.Quaternion();
 const handIntersection = new THREE.Vector3();
 const modelVisualOffset = new THREE.Vector3();
+const rawHandTargetPosition = new THREE.Vector3();
+const handAxisX = new THREE.Vector3();
+const handAxisY = new THREE.Vector3();
+const handAxisZ = new THREE.Vector3();
+const handRotationMatrix = new THREE.Matrix4();
+const handRotation = new THREE.Quaternion();
+const rotationDelta = new THREE.Quaternion();
+const anchorInverseRotation = new THREE.Quaternion();
 const detectionTimes = [];
 const detectionStamps = [];
 const clock = new THREE.Clock();
@@ -295,8 +306,15 @@ function runDetection(now) {
   if (!detector || detectorBusy || !cameraStarted || elements.video.readyState < 2) return;
   if (now - lastDetectionAt < 1000 / 30) return;
   lastDetectionAt = now;
-  detectorBusy = true;
 
+  // After a hand takes ownership, keep supplying fresh camera frames to the
+  // hand task but stop running (and reacting to) the marker detector entirely.
+  if (modelTransferred) {
+    drawCameraFrame();
+    return;
+  }
+
+  detectorBusy = true;
   try {
     if (!drawCameraFrame()) return;
     const frame = detectorContext.getImageData(0, 0, processingWidth, processingHeight);
@@ -312,7 +330,7 @@ function runDetection(now) {
 
     if (target && updatePose(target)) {
       setTracking(true);
-    } else if (performance.now() - lastMarkerAt > 260) {
+    } else if (!modelTransferred && performance.now() - lastMarkerAt > 260) {
       anchor.visible = false;
       hasPose = false;
       setTracking(false);
@@ -333,6 +351,19 @@ function setSizeScaler(next) {
 
 function adjustSizeScaler(direction) {
   setSizeScaler(sizeScaler + direction * 0.1);
+}
+
+function resetHandTransfer() {
+  modelTransferred = false;
+  handAttached = false;
+  gestureScale = 1;
+  rotationReferenceHand = null;
+  handTargetPosition.set(0, 0, 0);
+  modelMount.position.set(0, 0, 0);
+  modelMount.rotation.set(-Math.PI / 2, 0, 0);
+  modelTargetRotation.copy(modelMount.quaternion);
+  modelMount.scale.setScalar(markerSizeMeters() * 0.92);
+  guideContext.clearRect(0, 0, processingWidth, processingHeight);
 }
 
 function buttonContainsPoint(button, point) {
@@ -373,33 +404,89 @@ function placeModelAtHand(center) {
   markerNormal.set(0, 0, 1).applyQuaternion(markerWorldQuaternion).normalize();
   markerPlane.setFromNormalAndCoplanarPoint(markerNormal, markerWorldPosition);
 
-  if (handRaycaster.ray.intersectPlane(markerPlane, handIntersection)) {
-    handTargetPosition.copy(handIntersection);
-    anchor.worldToLocal(handTargetPosition);
-    const visualCenter = activeModel?.userData?.visualCenter;
-    if (visualCenter) {
-      modelVisualOffset.copy(visualCenter).applyEuler(modelMount.rotation).multiply(modelMount.scale);
-      handTargetPosition.sub(modelVisualOffset);
-    }
-    return true;
+  if (!handRaycaster.ray.intersectPlane(markerPlane, handIntersection)) return false;
+
+  rawHandTargetPosition.copy(handIntersection);
+  anchor.worldToLocal(rawHandTargetPosition);
+  const visualCenter = activeModel?.userData?.visualCenter;
+  if (visualCenter) {
+    modelVisualOffset.copy(visualCenter).applyQuaternion(modelMount.quaternion).multiply(modelMount.scale);
+    rawHandTargetPosition.sub(modelVisualOffset);
   }
-  return false;
+
+  // Landmark centres fluctuate slightly from inference to inference. Filter
+  // them before render interpolation, rather than jumping the render target.
+  if (!modelTransferred) handTargetPosition.copy(rawHandTargetPosition);
+  else handTargetPosition.lerp(rawHandTargetPosition, 0.16);
+  return true;
 }
 
-function updateHandInteraction({ activeHand, rightHand, rotationDelta, canManipulate }) {
-  if (!canManipulate || !activeHand) {
-    handAttached = false;
-    gestureScale = 1;
-    handTargetPosition.set(0, 0, 0);
-    updateThumbZoom(null);
+function palmOrientation(worldLandmarks) {
+  if (!worldLandmarks?.[17]) return null;
+  // Convert MediaPipe's camera axes (Y-down, Z-forward) to Three.js axes.
+  handAxisX.set(
+    worldLandmarks[17].x - worldLandmarks[5].x,
+    worldLandmarks[5].y - worldLandmarks[17].y,
+    worldLandmarks[5].z - worldLandmarks[17].z,
+  ).normalize();
+  handAxisY.set(
+    worldLandmarks[9].x - worldLandmarks[0].x,
+    worldLandmarks[0].y - worldLandmarks[9].y,
+    worldLandmarks[0].z - worldLandmarks[9].z,
+  );
+  handAxisY.addScaledVector(handAxisX, -handAxisY.dot(handAxisX)).normalize();
+  handAxisZ.crossVectors(handAxisX, handAxisY).normalize();
+  if (handAxisX.lengthSq() < 0.5 || handAxisY.lengthSq() < 0.5 || handAxisZ.lengthSq() < 0.5) return null;
+  handRotationMatrix.makeBasis(handAxisX, handAxisY, handAxisZ);
+  return handRotation.setFromRotationMatrix(handRotationMatrix);
+}
+
+function updateHandRotation(worldLandmarks, enabled) {
+  if (!enabled) {
+    rotationReferenceHand = null;
+    return;
+  }
+  const current = palmOrientation(worldLandmarks);
+  if (!current) return;
+  if (!rotationReferenceHand) {
+    rotationReferenceHand = current.clone();
+    rotationReferenceModel.copy(modelTargetRotation);
     return;
   }
 
-  gestureScale = THREE.MathUtils.clamp(activeHand.spread * 7.5 * sizeScaler, 0.32, 3.2);
-  gestureRotation += rotationDelta * 1.35;
-  modelMount.rotation.y = gestureRotation;
+  rotationDelta.copy(current).multiply(rotationReferenceHand.clone().invert());
+  anchor.getWorldQuaternion(markerWorldQuaternion);
+  anchorInverseRotation.copy(markerWorldQuaternion).invert();
+  // Apply the palm's full 3D rotation delta in camera space, then convert it
+  // back to the frozen marker coordinate system used by the model.
+  modelTargetRotation.copy(anchorInverseRotation)
+    .multiply(rotationDelta)
+    .multiply(markerWorldQuaternion)
+    .multiply(rotationReferenceModel);
+}
+
+function updateHandInteraction({ activeHand, rightHand, rotationEnabled, canManipulate }) {
+  if (!canManipulate || !activeHand) {
+    updateThumbZoom(null);
+    if (!modelTransferred) {
+      handAttached = false;
+      gestureScale = 1;
+      handTargetPosition.set(0, 0, 0);
+    }
+    updateHandRotation(null, false);
+    return;
+  }
+
+  const nextScale = THREE.MathUtils.clamp(activeHand.spread * 7.5 * sizeScaler, 0.32, 3.2);
+  gestureScale = modelTransferred ? THREE.MathUtils.lerp(gestureScale, nextScale, 0.2) : nextScale;
   modelMount.scale.setScalar(markerSizeMeters() * 0.92 * gestureScale);
   handAttached = placeModelAtHand(activeHand.center);
+  if (handAttached && !modelTransferred) {
+    modelTransferred = true;
+    guideContext.clearRect(0, 0, processingWidth, processingHeight);
+    setHud('Hand control active · marker tracking released');
+  }
+  updateHandRotation(activeHand.worldLandmarks, rotationEnabled);
   updateThumbZoom(rightHand?.thumb);
 }
 
@@ -408,7 +495,8 @@ function animate(now) {
   runDetection(now);
   // Two hands are sampled from the shared 640px frame at an adaptive 5–10fps.
   handGestures?.process(elements.detectorCanvas, now, tracking && anchor.visible);
-  modelMount.position.lerp(handTargetPosition, handAttached ? 0.28 : 0.16);
+  modelMount.position.lerp(handTargetPosition, handAttached ? 0.22 : 0.16);
+  modelMount.quaternion.slerp(modelTargetRotation, 0.14);
   activeModel?.userData?.animate?.(clock.getElapsedTime());
   renderer.render(scene, camera);
 }
@@ -482,6 +570,7 @@ async function startCamera() {
 }
 
 async function switchCamera() {
+  resetHandTransfer();
   facingMode = facingMode === 'environment' ? 'user' : 'environment';
   setHud('Switching camera…');
   await startCamera();
@@ -506,6 +595,7 @@ elements.markerId.addEventListener('change', () => {
   const fallback = Number.isFinite(parsed) ? parsed : SAMPLE_MARKER_ID;
   const value = Math.min(1022, Math.max(0, Math.round(fallback)));
   elements.markerId.value = String(value);
+  resetHandTransfer();
   anchor.visible = false;
   hasPose = false;
   setTracking(false, true);
