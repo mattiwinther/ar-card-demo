@@ -1,5 +1,28 @@
-const MAX_HAND_FPS = 12;
-const MIN_HAND_FPS = 7;
+const MAX_HAND_FPS = 15;
+const MIN_HAND_FPS = 9;
+
+const clamp01 = (value) => Math.min(1, Math.max(0, value));
+
+function smoothLandmarks(previous, current, dt, motionScale) {
+  if (!current) return null;
+  if (!previous || previous.length !== current.length) return current.map((point) => ({ ...point }));
+
+  const baseAlpha = 1 - Math.exp(-dt * 4);
+  current.forEach((point, index) => {
+    const filtered = previous[index];
+    const speed = Math.hypot(
+      point.x - filtered.x,
+      point.y - filtered.y,
+      (point.z || 0) - (filtered.z || 0),
+    ) / dt;
+    const alpha = baseAlpha + (0.78 - baseAlpha) * clamp01(speed / motionScale);
+    filtered.x += (point.x - filtered.x) * alpha;
+    filtered.y += (point.y - filtered.y) * alpha;
+    if (Number.isFinite(point.z)) filtered.z += (point.z - filtered.z) * alpha;
+    if (Number.isFinite(point.visibility)) filtered.visibility = point.visibility;
+  });
+  return previous;
+}
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -42,6 +65,12 @@ export class HandGestureController {
     this.nextInferenceAt = 0;
     this.missingFrames = 0;
     this.lastState = '';
+    this.filteredLandmarks = null;
+    this.filteredWorldLandmarks = null;
+    this.lastHandTimestamp = 0;
+    this.openStartedAt = null;
+    this.closedStartedAt = null;
+    this.openHandStable = false;
   }
 
   async initialize() {
@@ -71,7 +100,7 @@ export class HandGestureController {
     const duration = performance.now() - started;
     const minInterval = 1000 / MAX_HAND_FPS;
     const maxInterval = 1000 / MIN_HAND_FPS;
-    this.nextInferenceAt = timestamp + Math.min(maxInterval, Math.max(minInterval, duration * 1.8));
+    this.nextInferenceAt = timestamp + Math.min(maxInterval, Math.max(minInterval, duration * 1.45));
 
     const rawHands = result.landmarks || [];
     if (!rawHands.length) {
@@ -85,14 +114,35 @@ export class HandGestureController {
     }
 
     this.missingFrames = 0;
+    const dt = this.lastHandTimestamp
+      ? Math.min(0.2, Math.max(1 / 60, (timestamp - this.lastHandTimestamp) / 1000))
+      : 1 / 15;
+    this.lastHandTimestamp = timestamp;
     const handedness = result.handedness || result.handednesses || [];
-    const hands = rawHands.map((landmarks, index) => ({
-      landmarks,
-      worldLandmarks: result.worldLandmarks?.[index],
-      label: handedness[index]?.[0]?.categoryName || 'Unknown',
-      center: handCenter(landmarks),
-      open: isOpenHand(landmarks),
-    }));
+    const rawLandmarks = rawHands[0];
+    const rawWorldLandmarks = result.worldLandmarks?.[0];
+    this.filteredLandmarks = smoothLandmarks(this.filteredLandmarks, rawLandmarks, dt, 0.7);
+    this.filteredWorldLandmarks = smoothLandmarks(this.filteredWorldLandmarks, rawWorldLandmarks, dt, 0.35);
+
+    const rawOpen = isOpenHand(rawLandmarks);
+    if (rawOpen) {
+      if (this.openStartedAt === null) this.openStartedAt = timestamp;
+      this.closedStartedAt = null;
+      if (timestamp - this.openStartedAt >= 50) this.openHandStable = true;
+    } else {
+      if (this.closedStartedAt === null) this.closedStartedAt = timestamp;
+      this.openStartedAt = null;
+      if (timestamp - this.closedStartedAt >= 90) this.openHandStable = false;
+    }
+
+    const hands = [{
+      landmarks: this.filteredLandmarks,
+      worldLandmarks: this.filteredWorldLandmarks,
+      label: handedness[0]?.[0]?.categoryName || 'Unknown',
+      center: handCenter(this.filteredLandmarks),
+      open: this.openHandStable,
+      timestamp,
+    }];
     this.draw(hands);
 
     const activeHand = hands[0];
@@ -138,6 +188,12 @@ export class HandGestureController {
 
   clear() {
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.filteredLandmarks = null;
+    this.filteredWorldLandmarks = null;
+    this.lastHandTimestamp = 0;
+    this.openStartedAt = null;
+    this.closedStartedAt = null;
+    this.openHandStable = false;
   }
 
   setState(message) {

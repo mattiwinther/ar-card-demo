@@ -30,9 +30,9 @@ The default object is **Anchor bot**, a procedural Three.js robot assembled from
 
 ## Hand controls
 
-The model begins on the marker. Once the marker is locked, show an open hand to lift its visual centre into the middle of the palm; the marker pose is then frozen and the marker detector is no longer used. Thumb, index finger, and wrist define the model's full 3D rotation. Use the lower-right `−` / `+` touch controls to set the model size. The hand model is bundled in `public/models/` and all landmark processing stays in the browser.
+The model begins on the marker. Once the marker is locked, show an open hand to lift its visual centre into the middle of the palm. The marker remains the continuously tracked world reference while the hand changes only the model's marker-relative position and rotation. A filtered palm frame built from the wrist and four knuckles defines full 3D rotation; using both the reference and current marker poses prevents camera motion from being mistaken for hand rotation. Use the lower-right `−` / `+` touch controls to set the model size. The hand model is bundled in `public/models/` and all landmark processing stays in the browser.
 
-For mobile performance, the hand task uses MediaPipe's GPU delegate, consumes the same downscaled 640px working frame as the marker detector, and samples one hand at an adaptive 7–12fps. The ArUco detector retains its 30fps budget until transfer. Uploaded glTF models automatically play their first animation clip when one is available.
+For mobile performance, the hand task uses MediaPipe's GPU delegate, consumes the same downscaled 640px working frame as the marker detector, and samples one hand at an adaptive 9–15fps. Screen and world landmarks use motion-adaptive temporal filtering, while open-hand recognition uses hysteresis to avoid rapidly attaching and detaching. ArUco detection continues at up to 30fps after hand pickup so the environment reference is never deliberately released. Uploaded glTF models automatically play their first animation clip when one is available.
 
 ## Build
 

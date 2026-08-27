@@ -25,6 +25,8 @@ export class PoseStabilizer {
     this.position = null;
     this.quaternion = null;
     this.pending = null;
+    this.relocalizationCandidate = null;
+    this.relocalizationFrames = 0;
     this.lastTimestamp = 0;
   }
 
@@ -32,6 +34,8 @@ export class PoseStabilizer {
     this.position = null;
     this.quaternion = null;
     this.pending = null;
+    this.relocalizationCandidate = null;
+    this.relocalizationFrames = 0;
     this.lastTimestamp = 0;
   }
 
@@ -41,7 +45,7 @@ export class PoseStabilizer {
       : this.pending;
   }
 
-  update(measurement, timestamp) {
+  update(measurement, timestamp, { relocalize = false } = {}) {
     if (!measurement) return null;
 
     // Require two similar observations before making a newly found marker
@@ -72,7 +76,7 @@ export class PoseStabilizer {
       return { position: this.position, quaternion: this.quaternion, corrected: true };
     }
 
-    const dt = Math.min(0.15, Math.max(1 / 120, (timestamp - this.lastTimestamp) / 1000));
+    const dt = Math.min(0.15, Math.max(0.001, (timestamp - this.lastTimestamp) / 1000));
     this.lastTimestamp = timestamp;
     const distance = this.position.distanceTo(measurement.position);
     const angle = quaternionAngle(this.quaternion, measurement.quaternion);
@@ -82,19 +86,54 @@ export class PoseStabilizer {
     const maxDistance = 0.018 + this.maxPositionSpeed * dt;
     const maxAngle = THREE.MathUtils.degToRad(12) + this.maxAngularSpeed * dt;
     if (distance > maxDistance || angle > maxAngle) {
-      return { position: this.position, quaternion: this.quaternion, corrected: false };
+      if (!relocalize) {
+        this.relocalizationCandidate = null;
+        this.relocalizationFrames = 0;
+        return { position: this.position, quaternion: this.quaternion, corrected: false, relocalizing: false };
+      }
+
+      // Never move the anchor from one surprising frame. A reacquired pose
+      // must agree with a second observation before gradual correction begins.
+      const candidateDistance = this.relocalizationCandidate
+        ? this.relocalizationCandidate.position.distanceTo(measurement.position)
+        : Infinity;
+      const candidateAngle = this.relocalizationCandidate
+        ? quaternionAngle(this.relocalizationCandidate.quaternion, measurement.quaternion)
+        : Infinity;
+      if (!this.relocalizationCandidate
+        || candidateDistance > 0.035
+        || candidateAngle > THREE.MathUtils.degToRad(22)) {
+        this.relocalizationCandidate = {
+          position: measurement.position.clone(),
+          quaternion: measurement.quaternion.clone(),
+        };
+        this.relocalizationFrames = 1;
+        return { position: this.position, quaternion: this.quaternion, corrected: false, relocalizing: true };
+      }
+
+      this.relocalizationFrames += 1;
+      this.relocalizationCandidate.position.lerp(measurement.position, 0.5);
+      this.relocalizationCandidate.quaternion.slerp(measurement.quaternion, 0.5);
+      const relocalizationAlpha = 1 - Math.exp(-dt * 6);
+      this.position.lerp(this.relocalizationCandidate.position, relocalizationAlpha);
+      this.quaternion.slerp(this.relocalizationCandidate.quaternion, relocalizationAlpha);
+      return { position: this.position, quaternion: this.quaternion, corrected: true, relocalizing: true };
     }
 
+    this.relocalizationCandidate = null;
+    this.relocalizationFrames = 0;
     const motion = Math.max(
       distance / Math.max(dt * 1.25, 0.001),
       angle / Math.max(dt * THREE.MathUtils.degToRad(180), 0.001),
     );
     const responsiveness = clamp01(motion);
-    const positionAlpha = THREE.MathUtils.lerp(0.10, 0.62, responsiveness);
-    const rotationAlpha = THREE.MathUtils.lerp(0.09, 0.58, responsiveness);
+    const positionRate = THREE.MathUtils.lerp(3.2, 29, responsiveness);
+    const rotationRate = THREE.MathUtils.lerp(2.8, 26, responsiveness);
+    const positionAlpha = 1 - Math.exp(-positionRate * dt);
+    const rotationAlpha = 1 - Math.exp(-rotationRate * dt);
 
     if (distance > this.positionDeadband) this.position.lerp(measurement.position, positionAlpha);
     if (angle > this.rotationDeadband) this.quaternion.slerp(measurement.quaternion, rotationAlpha);
-    return { position: this.position, quaternion: this.quaternion, corrected: true };
+    return { position: this.position, quaternion: this.quaternion, corrected: true, relocalizing: false };
   }
 }

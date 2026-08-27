@@ -110,8 +110,11 @@ let frameHandle = 0;
 let sizeScaler = 1;
 let handAttached = false;
 let modelTransferred = false;
+let markerRelocalizing = false;
+let lastHandPositionAt = 0;
 let rotationReferenceHand = null;
 const rotationReferenceModel = new THREE.Quaternion();
+const rotationReferenceAnchor = new THREE.Quaternion();
 const modelTargetRotation = modelMount.quaternion.clone();
 const handTargetPosition = new THREE.Vector3();
 const handRaycaster = new THREE.Raycaster();
@@ -133,6 +136,7 @@ const anchorInverseRotation = new THREE.Quaternion();
 const detectionTimes = [];
 const detectionStamps = [];
 const clock = new THREE.Clock();
+let lastAnimationAt = performance.now();
 const poseStabilizer = new PoseStabilizer();
 const MIN_MARKER_AREA = 700;
 const MIN_MARKER_EDGE = 22;
@@ -308,7 +312,7 @@ function isUsableMarkerQuad(corners) {
   return shortestEdge >= MIN_MARKER_EDGE && longestEdge / shortestEdge <= 6;
 }
 
-function updatePose(marker, now) {
+function updatePose(marker, now, relocalize = false) {
   if (!isUsableMarkerQuad(marker.corners)) return false;
 
   const pose = estimateSquarePoseClosestToReference(
@@ -319,7 +323,7 @@ function updatePose(marker, now) {
   );
   if (!pose || pose.translation.z < 0.02 || pose.translation.z > 20 || pose.viewCosine < MIN_VIEW_COSINE) return false;
 
-  const stablePose = poseStabilizer.update(pose, now);
+  const stablePose = poseStabilizer.update(pose, now, { relocalize });
   // Hold the prior anchor during a rejected spike. If a genuinely new pose
   // persists, the normal marker-loss timeout resets the filter and lets it
   // acquire cleanly rather than ever accepting a discontinuous flip.
@@ -327,6 +331,7 @@ function updatePose(marker, now) {
 
   anchor.position.copy(stablePose.position);
   anchor.quaternion.copy(stablePose.quaternion);
+  markerRelocalizing = Boolean(stablePose.relocalizing);
   hasPose = true;
   const markerScale = markerSizeMeters() * 0.92;
   modelMount.scale.setScalar(markerScale * sizeScaler);
@@ -340,13 +345,8 @@ function runDetection(now) {
   if (now - lastDetectionAt < 1000 / 30) return;
   lastDetectionAt = now;
 
-  // After a hand takes ownership, keep supplying fresh camera frames to the
-  // hand task but stop running (and reacting to) the marker detector entirely.
-  if (modelTransferred) {
-    drawCameraFrame();
-    return;
-  }
-
+  // Keep the marker as the world reference after hand pickup. The hand only
+  // changes the model's transform relative to this continuously tracked anchor.
   detectorBusy = true;
   try {
     if (!drawCameraFrame()) return;
@@ -361,11 +361,14 @@ function runDetection(now) {
     elements.metricMarker.textContent = shownMarker ? `#${shownMarker.id}` : '—';
     drawMarkerGuide(shownMarker, Boolean(target));
 
-    if (target && updatePose(target, now)) {
+    if (modelTransferred && now - lastMarkerAt > MARKER_HOLD_MS) markerRelocalizing = true;
+
+    if (target && updatePose(target, now, markerRelocalizing)) {
       setTracking(true);
     } else if (!modelTransferred && now - lastMarkerAt > MARKER_HOLD_MS) {
       anchor.visible = false;
       hasPose = false;
+      markerRelocalizing = false;
       poseStabilizer.reset();
       setTracking(false);
     }
@@ -390,6 +393,8 @@ function adjustSizeScaler(direction) {
 
 function resetHandTransfer() {
   modelTransferred = false;
+  markerRelocalizing = false;
+  lastHandPositionAt = 0;
   handAttached = false;
   hasPose = false;
   poseStabilizer.reset();
@@ -402,7 +407,7 @@ function resetHandTransfer() {
   guideContext.clearRect(0, 0, processingWidth, processingHeight);
 }
 
-function placeModelAtHand(center) {
+function placeModelAtHand(center, timestamp) {
   handNdc.set(center.x * 2 - 1, 1 - center.y * 2);
   anchor.updateMatrixWorld(true);
   handRaycaster.setFromCamera(handNdc, camera);
@@ -421,30 +426,38 @@ function placeModelAtHand(center) {
     rawHandTargetPosition.sub(modelVisualOffset);
   }
 
-  // Landmark centres fluctuate slightly from inference to inference. Filter
-  // them before render interpolation, rather than jumping the render target.
-  if (!modelTransferred) handTargetPosition.copy(rawHandTargetPosition);
-  else handTargetPosition.lerp(rawHandTargetPosition, 0.32);
+  // Landmark centres fluctuate slightly from inference to inference. Use a
+  // time-based low-pass so different Android inference rates feel the same.
+  if (!modelTransferred || !lastHandPositionAt) {
+    handTargetPosition.copy(rawHandTargetPosition);
+  } else {
+    const dt = Math.min(0.25, Math.max(0, (timestamp - lastHandPositionAt) / 1000));
+    handTargetPosition.lerp(rawHandTargetPosition, 1 - Math.exp(-4.6 * dt));
+  }
+  lastHandPositionAt = timestamp;
   return true;
 }
 
 function palmOrientation(worldLandmarks) {
-  if (!worldLandmarks?.[8]) return null;
+  if (!worldLandmarks?.[17]) return null;
   const wrist = worldLandmarks[0];
-  const thumb = worldLandmarks[4];
-  const index = worldLandmarks[8];
-  // The thumb–index axis and its wrist-facing axis define a stable, full 3D
-  // palm frame. Convert MediaPipe's camera axes to Three.js coordinates.
+  const indexKnuckle = worldLandmarks[5];
+  const middleKnuckle = worldLandmarks[9];
+  const ringKnuckle = worldLandmarks[13];
+  const pinkyKnuckle = worldLandmarks[17];
+
+  // Palm knuckles are much less affected by finger articulation than tips.
+  // The across-palm axis plus wrist-to-knuckle axis define a stable 3D frame.
+  // Convert MediaPipe's camera axes to Three.js coordinates at the same time.
   handAxisX.set(
-    index.x - thumb.x,
-    thumb.y - index.y,
-    thumb.z - index.z,
+    indexKnuckle.x - pinkyKnuckle.x,
+    pinkyKnuckle.y - indexKnuckle.y,
+    pinkyKnuckle.z - indexKnuckle.z,
   ).normalize();
-  handAxisY.set(
-    wrist.x - (thumb.x + index.x) * 0.5,
-    (thumb.y + index.y) * 0.5 - wrist.y,
-    (thumb.z + index.z) * 0.5 - wrist.z,
-  );
+  const palmX = (indexKnuckle.x + middleKnuckle.x + ringKnuckle.x + pinkyKnuckle.x) * 0.25;
+  const palmY = (indexKnuckle.y + middleKnuckle.y + ringKnuckle.y + pinkyKnuckle.y) * 0.25;
+  const palmZ = (indexKnuckle.z + middleKnuckle.z + ringKnuckle.z + pinkyKnuckle.z) * 0.25;
+  handAxisY.set(palmX - wrist.x, wrist.y - palmY, wrist.z - palmZ);
   handAxisY.addScaledVector(handAxisX, -handAxisY.dot(handAxisX)).normalize();
   handAxisZ.crossVectors(handAxisX, handAxisY).normalize();
   if (handAxisX.lengthSq() < 0.5 || handAxisY.lengthSq() < 0.5 || handAxisZ.lengthSq() < 0.5) return null;
@@ -462,17 +475,20 @@ function updateHandRotation(worldLandmarks, enabled) {
   if (!rotationReferenceHand) {
     rotationReferenceHand = current.clone();
     rotationReferenceModel.copy(modelTargetRotation);
+    anchor.getWorldQuaternion(rotationReferenceAnchor);
     return;
   }
 
   rotationDelta.copy(current).multiply(rotationReferenceHand.clone().invert());
   anchor.getWorldQuaternion(markerWorldQuaternion);
   anchorInverseRotation.copy(markerWorldQuaternion).invert();
-  // Apply the palm's full 3D rotation delta in camera space, then convert it
-  // back to the frozen marker coordinate system used by the model.
+  // Compare the current palm to its camera-space reference, then transform
+  // through the marker poses from the reference and current frames. Including
+  // both anchor poses cancels camera movement instead of treating it as a hand
+  // rotation.
   modelTargetRotation.copy(anchorInverseRotation)
     .multiply(rotationDelta)
-    .multiply(markerWorldQuaternion)
+    .multiply(rotationReferenceAnchor)
     .multiply(rotationReferenceModel);
 }
 
@@ -486,22 +502,25 @@ function updateHandInteraction({ activeHand, rotationEnabled, canManipulate }) {
     return;
   }
 
-  handAttached = placeModelAtHand(activeHand.center);
+  handAttached = placeModelAtHand(activeHand.center, activeHand.timestamp);
   if (handAttached && !modelTransferred) {
     modelTransferred = true;
     guideContext.clearRect(0, 0, processingWidth, processingHeight);
-    setHud('Hand control active · marker tracking released');
+    setHud('Hand control active · marker anchor remains locked');
   }
   updateHandRotation(activeHand.worldLandmarks, rotationEnabled);
 }
 
 function animate(now) {
   frameHandle = requestAnimationFrame(animate);
+  const dt = Math.min(0.1, Math.max(0, (now - lastAnimationAt) / 1000));
+  lastAnimationAt = now;
   runDetection(now);
-  // One hand is sampled from the shared 640px frame at an adaptive 7–12fps.
+  // One hand is sampled from the shared 640px frame at an adaptive 9–15fps.
   handGestures?.process(elements.detectorCanvas, now, tracking && anchor.visible);
-  modelMount.position.lerp(handTargetPosition, handAttached ? 0.22 : 0.16);
-  modelMount.quaternion.slerp(modelTargetRotation, 0.14);
+  const positionRate = handAttached ? 15 : 10.5;
+  modelMount.position.lerp(handTargetPosition, 1 - Math.exp(-positionRate * dt));
+  modelMount.quaternion.slerp(modelTargetRotation, 1 - Math.exp(-9 * dt));
   activeModel?.userData?.animate?.(clock.getElapsedTime());
   renderer.render(scene, camera);
 }
@@ -543,6 +562,7 @@ async function startCamera() {
   try {
     await initializeDetector();
     hasPose = false;
+    markerRelocalizing = false;
     poseStabilizer.reset();
     anchor.visible = false;
     cameraStream?.getTracks().forEach((track) => track.stop());

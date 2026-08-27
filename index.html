@@ -148,7 +148,7 @@
       <button class="dialog-close icon-button" id="about-close" aria-label="Close"><i data-lucide="x"></i></button>
       <p class="eyebrow">HOW IT WORKS</p>
       <h2>A fast, local AR pipeline.</h2>
-      <p><strong>aruco-rs</strong> detects marker corners in WebAssembly. When a hand appears, MediaPipe transfers the model from the marker to the palm; thumb, index finger, and wrist define its full 3D rotation, while the on-screen controls set its size.</p>
+      <p><strong>aruco-rs</strong> continuously tracks the marker anchor in WebAssembly. MediaPipe filters the palm landmarks and manipulates the model relative to that anchor, while the on-screen controls set its size.</p>
       <ol>
         <li><span>01</span>Camera frame</li>
         <li><span>02</span>ArUco detection</li>
