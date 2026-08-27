@@ -301,6 +301,13 @@ select { height: 32px; padding: 0 30px 0 9px; border: 1px solid rgba(255,255,255
 .hud-action:hover { color: var(--lime); }
 .hud-action svg { width: 16px; }
 
+.zoom-controls { position: absolute; z-index: 8; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 1px; border: 1px solid var(--line); background: rgba(5,14,11,.79); backdrop-filter: blur(15px); opacity: 0; pointer-events: none; transition: .45s ease; }
+.camera-active .zoom-controls { opacity: 1; pointer-events: auto; }
+.zoom-controls > span { padding: 0 9px; color: #788780; font: 8px var(--font-mono); letter-spacing: .1em; }
+.zoom-controls button { width: 37px; height: 42px; display: grid; place-items: center; border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--paper); cursor: pointer; transition: .18s ease; }
+.zoom-controls button:hover, .zoom-controls button.is-hovered { background: var(--lime); color: var(--ink); }
+.zoom-controls svg { width: 15px; }
+
 .footer-strip { gap: 12px; color: #56635e; font: 8px var(--font-mono); letter-spacing: .08em; }
 .footer-line { width: 28px; height: 1px; background: #37443f; }
 .footer-spacer { flex: 1; }
@@ -345,6 +352,8 @@ select { height: 32px; padding: 0 30px 0 9px; border: 1px solid rgba(255,255,255
   .control-stack select { width: 55%; }
   .upload-button { margin-top: 8px; }
   .bottom-hud { left: 12px; right: 12px; bottom: 12px; min-width: 0; transform: translateY(10px); }
+  .zoom-controls { right: 12px; bottom: 72px; }
+  .zoom-controls > span { display: none; }
   .camera-active .bottom-hud { transform: none; }
   .hud-message { flex: 1; padding: 0 11px; font-size: 9px; }
   .corner { display: none; }

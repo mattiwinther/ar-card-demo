@@ -1,5 +1,5 @@
-const MAX_HAND_FPS = 12;
-const MIN_HAND_FPS = 7;
+const MAX_HAND_FPS = 10;
+const MIN_HAND_FPS = 5;
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -28,27 +28,32 @@ function isOpenHand(landmarks) {
     && isFingerExtended(landmarks, 17, 18, 20);
 }
 
+function handCenter(landmarks) {
+  const points = [landmarks[0], landmarks[5], landmarks[9], landmarks[13], landmarks[17]];
+  return points.reduce((center, point) => ({ x: center.x + point.x / points.length, y: center.y + point.y / points.length }), { x: 0, y: 0 });
+}
+
 /**
- * Runs one GPU hand-landmark inference at a time on the already downscaled AR
- * frame. It intentionally caps itself below the marker detector's rate so the
- * marker pose remains responsive on mid-range phones.
+ * GPU hand landmarks share the marker detector's downscaled frame. Two hands
+ * are supported so the left hand can manipulate the model while the right
+ * thumb operates the on-screen size controls.
  */
 export class HandGestureController {
-  constructor({ canvas, onTransform, onStateChange }) {
+  constructor({ canvas, onHands, onStateChange }) {
     this.canvas = canvas;
     this.context = canvas.getContext('2d');
-    this.onTransform = onTransform;
+    this.onHands = onHands;
     this.onStateChange = onStateChange;
     this.landmarker = null;
+    this.handConnections = [];
     this.nextInferenceAt = 0;
-    this.session = null;
+    this.rotationSession = null;
     this.missingFrames = 0;
     this.lastState = '';
   }
 
   async initialize() {
     this.setState('Loading hand controls…');
-    // Lazy-load the task bundle only after the user starts the camera.
     const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
     this.handConnections = HandLandmarker.HAND_CONNECTIONS;
     const vision = await FilesetResolver.forVisionTasks('./mediapipe');
@@ -58,22 +63,12 @@ export class HandGestureController {
         delegate: 'GPU',
       },
       runningMode: 'VIDEO',
-      numHands: 1,
+      numHands: 2,
       minHandDetectionConfidence: 0.62,
       minHandPresenceConfidence: 0.58,
       minTrackingConfidence: 0.55,
     });
-    this.setState('Show an open hand · turn to rotate · spread to scale');
-  }
-
-  setEnabled(enabled) {
-    if (!enabled) {
-      this.session = null;
-      this.clear();
-      this.setState('Hand controls paused');
-    } else if (this.landmarker) {
-      this.setState('Show an open hand · turn to rotate · spread to scale');
-    }
+    this.setState('Show your left hand to lift the model');
   }
 
   process(frame, timestamp, canManipulate) {
@@ -84,79 +79,81 @@ export class HandGestureController {
     const duration = performance.now() - started;
     const minInterval = 1000 / MAX_HAND_FPS;
     const maxInterval = 1000 / MIN_HAND_FPS;
-    // Slow devices back off automatically, reserving time for 30fps ArUco.
-    this.nextInferenceAt = timestamp + Math.min(maxInterval, Math.max(minInterval, duration * 1.6));
+    this.nextInferenceAt = timestamp + Math.min(maxInterval, Math.max(minInterval, duration * 1.8));
 
-    const landmarks = result.landmarks?.[0];
-    if (!landmarks) {
+    const rawHands = result.landmarks || [];
+    if (!rawHands.length) {
       this.missingFrames += 1;
       if (this.missingFrames >= 2) {
-        this.session = null;
+        this.rotationSession = null;
         this.clear();
-        this.setState('Show an open hand · turn to rotate · spread to scale');
+        this.onHands?.({ activeHand: null, rightHand: null, rotationDelta: 0, canManipulate });
+        this.setState('Show your left hand to lift the model');
       }
       return;
     }
 
     this.missingFrames = 0;
-    this.draw(landmarks);
-    if (!canManipulate) {
-      this.session = null;
-      this.setState('Find the marker, then show an open hand');
-      return;
+    const handedness = result.handedness || result.handednesses || [];
+    const hands = rawHands.map((landmarks, index) => ({
+      landmarks,
+      label: handedness[index]?.[0]?.categoryName || 'Unknown',
+      center: handCenter(landmarks),
+      spread: distance(landmarks[4], landmarks[20]),
+      thumb: landmarks[4],
+      open: isOpenHand(landmarks),
+    }));
+    this.draw(hands);
+
+    const leftHand = hands.find((hand) => hand.label === 'Left');
+    const rightHand = hands.find((hand) => hand.label === 'Right');
+    // A single unclassified hand remains useful on browsers that omit labels.
+    const activeHand = leftHand || hands[0];
+    let rotationDelta = 0;
+
+    if (canManipulate && activeHand.open) {
+      const palmAngle = Math.atan2(
+        activeHand.landmarks[17].y - activeHand.landmarks[5].y,
+        activeHand.landmarks[17].x - activeHand.landmarks[5].x,
+      );
+      if (this.rotationSession) {
+        rotationDelta = Math.max(-0.18, Math.min(0.18, normalizeAngle(palmAngle - this.rotationSession)));
+      }
+      this.rotationSession = palmAngle;
+      this.setState(rightHand ? 'Left hand: move / turn · right thumb: size controls' : 'Hand attached · turn your wrist to rotate');
+    } else {
+      this.rotationSession = null;
+      this.setState(canManipulate ? 'Open all five fingers to rotate the model' : 'Find the marker, then show your left hand');
     }
 
-    if (!isOpenHand(landmarks)) {
-      this.session = null;
-      this.setState('Open all five fingers to control the model');
-      return;
-    }
-
-    const palmAngle = Math.atan2(
-      landmarks[17].y - landmarks[5].y,
-      landmarks[17].x - landmarks[5].x,
-    );
-    const palmWidth = distance(landmarks[5], landmarks[17]);
-    const spread = palmWidth > 0.001 ? distance(landmarks[4], landmarks[20]) / palmWidth : 1;
-
-    if (!this.session) {
-      this.session = { angle: palmAngle, spread };
-      this.setState('Hand control active · turn to rotate · spread to scale');
-      return;
-    }
-
-    // Reject a one-frame landmark jump while keeping deliberate wrist turns.
-    const angleDelta = Math.max(-0.18, Math.min(0.18, normalizeAngle(palmAngle - this.session.angle)));
-    const scaleFactor = Math.max(0.82, Math.min(1.22, spread / this.session.spread));
-    this.session.angle = palmAngle;
-    this.session.spread = spread;
-    this.onTransform({ rotationDelta: angleDelta * 1.35, scaleFactor });
-    this.setState('Hand control active · turn to rotate · spread to scale');
+    this.onHands?.({ activeHand, rightHand, rotationDelta, canManipulate });
   }
 
-  draw(landmarks) {
+  draw(hands) {
     const { width, height } = this.canvas;
     this.context.clearRect(0, 0, width, height);
     this.context.save();
-    this.context.strokeStyle = 'rgba(199, 240, 75, .82)';
-    this.context.fillStyle = '#ddff68';
     this.context.lineWidth = Math.max(1.5, width / 360);
-    this.context.shadowColor = '#c7f04b';
     this.context.shadowBlur = 7;
 
-    this.handConnections.forEach(({ start, end }) => {
-      const a = landmarks[start];
-      const b = landmarks[end];
-      this.context.beginPath();
-      this.context.moveTo(a.x * width, a.y * height);
-      this.context.lineTo(b.x * width, b.y * height);
-      this.context.stroke();
-    });
-
-    landmarks.forEach((point, index) => {
-      this.context.beginPath();
-      this.context.arc(point.x * width, point.y * height, index === 0 ? 4 : 2.6, 0, Math.PI * 2);
-      this.context.fill();
+    hands.forEach((hand) => {
+      const isRight = hand.label === 'Right';
+      this.context.strokeStyle = isRight ? 'rgba(143, 229, 189, .86)' : 'rgba(199, 240, 75, .86)';
+      this.context.fillStyle = isRight ? '#8fe5bd' : '#ddff68';
+      this.context.shadowColor = this.context.fillStyle;
+      this.handConnections.forEach(({ start, end }) => {
+        const a = hand.landmarks[start];
+        const b = hand.landmarks[end];
+        this.context.beginPath();
+        this.context.moveTo(a.x * width, a.y * height);
+        this.context.lineTo(b.x * width, b.y * height);
+        this.context.stroke();
+      });
+      hand.landmarks.forEach((point, index) => {
+        this.context.beginPath();
+        this.context.arc(point.x * width, point.y * height, index === 0 ? 4 : 2.6, 0, Math.PI * 2);
+        this.context.fill();
+      });
     });
     this.context.restore();
   }

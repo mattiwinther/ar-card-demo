@@ -8,6 +8,8 @@ import {
   Focus,
   Hand,
   Info,
+  Minus,
+  Plus,
   Printer,
   ScanLine,
   ShieldCheck,
@@ -21,7 +23,7 @@ import { createBeacon, createBot, loadUploadedModel } from './models.js';
 import { openPrintableMarker, renderMiniMarker, SAMPLE_MARKER_ID } from './marker.js';
 
 createIcons({
-  icons: { ArrowUpRight, Box, Focus, Hand, Info, Printer, ScanLine, ShieldCheck, SwitchCamera, Upload, X },
+  icons: { ArrowUpRight, Box, Focus, Hand, Info, Minus, Plus, Printer, ScanLine, ShieldCheck, SwitchCamera, Upload, X },
 });
 renderMiniMarker(document.querySelector('#marker-mini'));
 
@@ -37,6 +39,9 @@ const elements = {
   startPrintButton: document.querySelector('#start-print-button'),
   printButton: document.querySelector('#print-button'),
   switchButton: document.querySelector('#camera-switch'),
+  zoomOut: document.querySelector('#zoom-out'),
+  zoomIn: document.querySelector('#zoom-in'),
+  zoomLabel: document.querySelector('#zoom-label'),
   markerId: document.querySelector('#marker-id'),
   markerSize: document.querySelector('#marker-size'),
   modelSelect: document.querySelector('#model-select'),
@@ -103,6 +108,18 @@ let tracking = false;
 let frameHandle = 0;
 let gestureRotation = 0;
 let gestureScale = 1;
+let sizeScaler = 1;
+let handAttached = false;
+let zoomHover = null;
+const handTargetPosition = new THREE.Vector3();
+const handRaycaster = new THREE.Raycaster();
+const handNdc = new THREE.Vector2();
+const markerPlane = new THREE.Plane();
+const markerNormal = new THREE.Vector3();
+const markerWorldPosition = new THREE.Vector3();
+const markerWorldQuaternion = new THREE.Quaternion();
+const handIntersection = new THREE.Vector3();
+const modelVisualOffset = new THREE.Vector3();
 const detectionTimes = [];
 const detectionStamps = [];
 const clock = new THREE.Clock();
@@ -309,19 +326,89 @@ function runDetection(now) {
   }
 }
 
-function applyHandTransform({ rotationDelta, scaleFactor }) {
-  gestureRotation += rotationDelta;
-  gestureScale = THREE.MathUtils.clamp(gestureScale * scaleFactor, 0.55, 2.4);
+function setSizeScaler(next) {
+  sizeScaler = THREE.MathUtils.clamp(next, 0.5, 2.25);
+  elements.zoomLabel.textContent = `SIZE ${sizeScaler.toFixed(1)}×`;
+}
+
+function adjustSizeScaler(direction) {
+  setSizeScaler(sizeScaler + direction * 0.1);
+}
+
+function buttonContainsPoint(button, point) {
+  if (!point) return false;
+  const stageRect = elements.stage.getBoundingClientRect();
+  const rect = button.getBoundingClientRect();
+  const x = stageRect.left + point.x * stageRect.width;
+  const y = stageRect.top + point.y * stageRect.height;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function updateThumbZoom(thumb) {
+  const direction = buttonContainsPoint(elements.zoomIn, thumb) ? 1
+    : buttonContainsPoint(elements.zoomOut, thumb) ? -1 : 0;
+  elements.zoomIn.classList.toggle('is-hovered', direction === 1);
+  elements.zoomOut.classList.toggle('is-hovered', direction === -1);
+
+  if (!direction) {
+    zoomHover = null;
+    return;
+  }
+
+  const now = performance.now();
+  if (!zoomHover || zoomHover.direction !== direction) {
+    zoomHover = { direction, since: now };
+  } else if (now - zoomHover.since > 360) {
+    adjustSizeScaler(direction);
+    zoomHover.since = now;
+  }
+}
+
+function placeModelAtHand(center) {
+  handNdc.set(center.x * 2 - 1, 1 - center.y * 2);
+  anchor.updateMatrixWorld(true);
+  handRaycaster.setFromCamera(handNdc, camera);
+  anchor.getWorldPosition(markerWorldPosition);
+  anchor.getWorldQuaternion(markerWorldQuaternion);
+  markerNormal.set(0, 0, 1).applyQuaternion(markerWorldQuaternion).normalize();
+  markerPlane.setFromNormalAndCoplanarPoint(markerNormal, markerWorldPosition);
+
+  if (handRaycaster.ray.intersectPlane(markerPlane, handIntersection)) {
+    handTargetPosition.copy(handIntersection);
+    anchor.worldToLocal(handTargetPosition);
+    const visualCenter = activeModel?.userData?.visualCenter;
+    if (visualCenter) {
+      modelVisualOffset.copy(visualCenter).applyEuler(modelMount.rotation).multiply(modelMount.scale);
+      handTargetPosition.sub(modelVisualOffset);
+    }
+    return true;
+  }
+  return false;
+}
+
+function updateHandInteraction({ activeHand, rightHand, rotationDelta, canManipulate }) {
+  if (!canManipulate || !activeHand) {
+    handAttached = false;
+    gestureScale = 1;
+    handTargetPosition.set(0, 0, 0);
+    updateThumbZoom(null);
+    return;
+  }
+
+  gestureScale = THREE.MathUtils.clamp(activeHand.spread * 7.5 * sizeScaler, 0.32, 3.2);
+  gestureRotation += rotationDelta * 1.35;
   modelMount.rotation.y = gestureRotation;
   modelMount.scale.setScalar(markerSizeMeters() * 0.92 * gestureScale);
+  handAttached = placeModelAtHand(activeHand.center);
+  updateThumbZoom(rightHand?.thumb);
 }
 
 function animate(now) {
   frameHandle = requestAnimationFrame(animate);
   runDetection(now);
-  // The hand task consumes the same 640px working frame at 7–12fps, leaving
-  // the marker detector its 30fps budget on mobile hardware.
+  // Two hands are sampled from the shared 640px frame at an adaptive 5–10fps.
   handGestures?.process(elements.detectorCanvas, now, tracking && anchor.visible);
+  modelMount.position.lerp(handTargetPosition, handAttached ? 0.28 : 0.16);
   activeModel?.userData?.animate?.(clock.getElapsedTime());
   renderer.render(scene, camera);
 }
@@ -340,7 +427,7 @@ async function initializeHandTracking() {
   handInitialization = (async () => {
     const controller = new HandGestureController({
       canvas: elements.handCanvas,
-      onTransform: applyHandTransform,
+      onHands: updateHandInteraction,
       onStateChange: (message) => { elements.gestureState.querySelector('span').textContent = message; },
     });
     try {
@@ -402,6 +489,8 @@ async function switchCamera() {
 
 elements.startButton.addEventListener('click', startCamera);
 elements.switchButton.addEventListener('click', switchCamera);
+elements.zoomOut.addEventListener('click', () => adjustSizeScaler(-1));
+elements.zoomIn.addEventListener('click', () => adjustSizeScaler(1));
 const printSampleMarker = () => {
   try {
     openPrintableMarker();

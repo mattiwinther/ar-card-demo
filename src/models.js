@@ -33,6 +33,9 @@ function normalizeModel(model) {
   model.position.z -= center.z;
   model.position.y -= normalizedBounds.min.y;
   model.updateMatrixWorld(true);
+  // Used when the model is lifted from the marker: its visual centre, rather
+  // than its ground-contact origin, should land in the user's palm.
+  model.userData.visualCenter = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
   return model;
 }
 
@@ -161,6 +164,18 @@ export async function loadUploadedModel(file) {
       child.receiveShadow = false;
       if (child.material) child.material.side = THREE.FrontSide;
     });
+
+    // A supplied glTF may contain multiple clips; start the first one by
+    // default so animated assets behave like the built-in procedural models.
+    if (gltf.animations?.length) {
+      const mixer = new THREE.AnimationMixer(model);
+      mixer.clipAction(gltf.animations[0]).play();
+      let previousTime = null;
+      model.userData.animate = (time) => {
+        if (previousTime !== null) mixer.update(Math.min(0.1, time - previousTime));
+        previousTime = time;
+      };
+    }
     return normalizeModel(model);
   } finally {
     URL.revokeObjectURL(basePath);
